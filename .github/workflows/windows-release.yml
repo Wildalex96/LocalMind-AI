@@ -1,0 +1,82 @@
+name: LocalMind AI 2.0 — Windows Release
+on:
+  push:
+    tags: ["v2.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (v2.x.x)"
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Resolve release version
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") { $tag = "${{ inputs.tag }}" }
+          if ($tag -notmatch '^v2\.\d+\.\d+$') { throw "Release tag must match v2.x.x. Got: $tag" }
+          $version = $tag.Substring(1)
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - uses: actions/setup-node@v4
+        with: {node-version: 20, cache: npm}
+      - run: npm install
+      - run: npm test
+  build:
+    needs: validate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-node@v4
+        with: {node-version: 20, cache: npm}
+      - name: Set package version from tag
+        shell: pwsh
+        run: npm version ${{ needs.validate.outputs.version }} --no-git-tag-version
+      - run: npm install
+      - name: Build Windows artifacts
+        run: npm run build:win
+      - name: Verify artifacts
+        shell: pwsh
+        run: |
+          if (-not (Get-ChildItem dist -Filter *.exe -ErrorAction SilentlyContinue)) { throw "No .exe artifact was produced." }
+          Get-ChildItem dist | Format-Table Name,Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LocalMind-Windows-${{ needs.validate.outputs.version }}
+          path: dist/*
+          if-no-files-found: error
+  release:
+    needs: [validate, build]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/download-artifact@v4
+        with:
+          name: LocalMind-Windows-${{ needs.validate.outputs.version }}
+          path: release
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.validate.outputs.tag }}
+          name: LocalMind AI ${{ needs.validate.outputs.version }}
+          generate_release_notes: true
+          files: release/*
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
