@@ -1,0 +1,9 @@
+{
+  "source":"resources/app.asar from LocalMind-AI-Autonomous-Windows.zip",
+  "recovered_files":["index.html","main.js","package.json","preload.js","renderer.js","styles.css"],
+  "app_version_recovered":"1.1.0",
+  "target_version":"2.0.0",
+  "new_components":["agent/intelligence-cycle.js","agent/controller.js","permissions/policy.js","permissions/manager.js","sandbox/windows-sandbox-runner.js","sandbox/windows-sandbox-broker.ps1"],
+  "build":"electron-builder NSIS + portable",
+  "note":"Original development dependency graph and builder config were not present in ASAR; build metadata was reconstructed."
+}
