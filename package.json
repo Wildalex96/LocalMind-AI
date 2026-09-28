@@ -8,7 +8,4 @@
   "scripts": {"start":"electron .","test":"node --test tests","build:win": "electron-builder --win nsis portable --publish never","check:sandbox":"powershell -ExecutionPolicy Bypass -File scripts/check-windows-sandbox.ps1"},
   "devDependencies": {"electron":"^36.0.0","electron-builder":"^26.0.0"},
   "build": {"appId":"com.localmind.ai","productName":"LocalMind AI","directories":{"output":"dist"},"files":["**/*","!dist{,/**}","!test{,/**}","!tests{,/**}","!*.zip"],"win":{"target":[{"target":"nsis","arch":["x64"]},{"target":"portable","arch":["x64"]}],"artifactName":"LocalMind-AI-${version}-${arch}.${ext}"},"nsis":{"oneClick":false,"perMachine":false,"allowToChangeInstallationDirectory":true,"createDesktopShortcut":true,"createStartMenuShortcut":true}}
-  "win": {
-  "icon": "build/icon.ico"
-}
 }
