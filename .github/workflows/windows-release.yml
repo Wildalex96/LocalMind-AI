@@ -46,7 +46,10 @@ jobs:
         with: {node-version: 20, cache: npm}
       - name: Set package version from tag
         shell: pwsh
-        run: npm version ${{ needs.validate.outputs.version }} --no-git-tag-version
+        run:  npm pkg set version=${{ needs.validate.outputs.version }}
+      - name: Show package version
+        shell: pwsh
+        run: npm pkg get version
       - run: npm install
       - name: Build Windows artifacts
         run: npm run build:win
