@@ -72,26 +72,27 @@ function run(exe, args, options = {}) {
 }
 function findOllama() { return OLLAMA_CANDIDATES().find(p => fs.existsSync(p)) || 'ollama.exe'; }
 function ollamaInstalled() { return findOllama() !== 'ollama.exe'; }
-async function waitForOllama(timeout = 45000) {
+async function waitForOllama(timeout = 10000) {
   const started = Date.now();
   while (Date.now() - started < timeout) {
     try { const response = await fetch(`${OLLAMA_URL}/api/tags`); if (response.ok) return true; } catch {}
-    await sleep(1000);
+    await sleep(500);
   }
   throw new Error(`Ollama не отвечает на ${OLLAMA_URL}`);
 }
-async function ensureOllamaAndModel(sendStatus) {
+async function ensureOllamaAndModel(sendStatus, { allowModelPull = false } = {}) {
   ensureData();
   try {
     const exe = findOllama();
     if (!ollamaInstalled()) throw new Error('Ollama не установлен');
-    sendStatus?.('Запускаю Ollama…');
+    sendStatus?.('Проверяю Ollama…');
     try { const probe = await fetch(`${OLLAMA_URL}/api/tags`); if (!probe.ok) throw new Error('not ready'); }
     catch { const process = spawn(exe, ['serve'], { windowsHide: true, detached: true, stdio: 'ignore' }); process.unref(); }
     await waitForOllama();
     sendStatus?.(`Проверяю модель ${DEFAULT_MODEL}…`);
     const tags = await (await fetch(`${OLLAMA_URL}/api/tags`)).json();
     if (!(tags.models || []).some(model => model.name === DEFAULT_MODEL)) {
+      if (!allowModelPull) throw new Error(`Модель ${DEFAULT_MODEL} не установлена; Ollama пропущен без автоматической загрузки.`);
       sendStatus?.(`Скачиваю модель ${DEFAULT_MODEL}…`);
       await run(exe, ['pull', DEFAULT_MODEL], { timeoutMs: 1800000 });
     }
@@ -104,7 +105,7 @@ async function ensureOllamaAndModel(sendStatus) {
   }
 }
 async function ensureOllamaReady(sendStatus) {
-  if (!ollamaReadyPromise) ollamaReadyPromise = ensureOllamaAndModel(sendStatus).finally(() => { ollamaReadyPromise = null; });
+  if (!ollamaReadyPromise) ollamaReadyPromise = ensureOllamaAndModel(sendStatus, { allowModelPull: false }).finally(() => { ollamaReadyPromise = null; });
   if (!await ollamaReadyPromise) throw new Error(readJson(bootstrapFile, { error: 'Ollama не готов.' }).error);
   return true;
 }
@@ -205,7 +206,7 @@ safeHandle('storage:open', (_, relativePath) => desktopStorage.openItem(relative
 safeHandle('storage:reveal', (_, relativePath) => desktopStorage.reveal(desktopStorage.safe(desktopStorage.readState().storagePath, relativePath)));
 
 safeHandle('bootstrap:status', () => readJson(bootstrapFile, { ready: false }));
-safeHandle('bootstrap:start', async event => ensureOllamaReady(message => event.sender.send('bootstrap:progress', message)));
+safeHandle('bootstrap:start', async event => ensureOllamaAndModel(message => event.sender.send('bootstrap:progress', message), { allowModelPull: true }));
 safeHandle('settings:get', () => ({ ...getSettings(), providers: providerManager.config() }));
 safeHandle('settings:set', (_, value) => {
   const allowed = ['free-auto', 'auto', 'ollama', 'openai', 'gemini', 'claude', 'openrouter', 'groq', 'lmstudio'];
@@ -217,16 +218,3 @@ safeHandle('memory:get', () => getMemory().memories);
 safeHandle('memory:clear', () => { writeJson(memoryFile, { memories: [] }); return []; });
 safeHandle('chat', async (event, payload) => { const result = await generateAI([{ role: 'user', content: payload.message }], message => event.sender.send('bootstrap:progress', message)); return result.text; });
 safeHandle('test', async () => { const result = await generateAI([{ role: 'user', content: 'Reply with OK.' }]); return result.provider; });
-
-function createWindow() {
-  ensureData();
-  const win = new BrowserWindow({ width: 1180, height: 820, minWidth: 900, minHeight: 650, backgroundColor: '#101318', webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false } });
-  win.loadFile('index.html');
-  win.webContents.once('did-finish-load', () => {
-    const providers = providerManager.config();
-    const count = Object.values(providers).filter(item => item.free && item.configured).length;
-    win.webContents.send('bootstrap:progress', `Free AI: ${count} провайдер(ов) доступно.`);
-  });
-}
-app.whenReady().then(() => { createWindow(); app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); }); });
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
