@@ -1,10 +1,12 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path'); const fs = require('fs'); const { spawn } = require('child_process'); const https = require('https');
 const { PermissionPolicy } = require('./permissions/policy'); const { PermissionManager } = require('./permissions/manager'); const { AgentController } = require('./agent/controller');
+const { createCivilizationRuntime } = require('./civilization-core/runtime'); const { registerGovernanceIPC } = require('./civilization-core/governance/ipc');
 const dataDir=path.join(app.getPath('userData'),'localmind'),memoryFile=path.join(dataDir,'memory.json'),settingsFile=path.join(dataDir,'settings.json'),bootstrapFile=path.join(dataDir,'bootstrap.json'),webCacheFile=path.join(dataDir,'web-cache.json');
 const DEFAULT_MODEL='qwen3:4b';
 const permissionManager=new PermissionManager(new PermissionPolicy({network:'ask',filesystemRead:'ask',filesystemWrite:'ask',codeExecution:'ask',processExecution:'deny',installSoftware:'deny',systemChanges:'deny'}));
 const agentController=new AgentController({permissionManager});
+const civilization=createCivilizationRuntime({appVersion:'9.3'}); registerGovernanceIPC(ipcMain,civilization); civilization.bootstrap();
 const OLLAMA_URL='http://127.0.0.1:11434'; const OLLAMA_EXE=path.join(process.env.LOCALAPPDATA||path.join(app.getPath('home'),'AppData','Local'),'Programs','Ollama','ollama.exe');
 function ensureData(){fs.mkdirSync(dataDir,{recursive:true});if(!fs.existsSync(memoryFile))fs.writeFileSync(memoryFile,JSON.stringify({memories:[]},null,2));if(!fs.existsSync(settingsFile))fs.writeFileSync(settingsFile,JSON.stringify({endpoint:OLLAMA_URL,model:DEFAULT_MODEL,internet:true,autoLearn:true},null,2));if(!fs.existsSync(webCacheFile))fs.writeFileSync(webCacheFile,JSON.stringify({pages:[]},null,2));}
 function readJson(file,fallback){try{return JSON.parse(fs.readFileSync(file,'utf8'));}catch{return fallback;}} function writeJson(file,value){fs.writeFileSync(file,JSON.stringify(value,null,2));} function getSettings(){return readJson(settingsFile,{endpoint:OLLAMA_URL,model:DEFAULT_MODEL,internet:true,autoLearn:true});} function getMemory(){return readJson(memoryFile,{memories:[]});} function sleep(ms){return new Promise(r=>setTimeout(r,ms));}

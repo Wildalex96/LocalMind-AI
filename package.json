@@ -1,11 +1,11 @@
 {
   "name": "localmind-ai",
-  "version": "2.0.0",
-  "description": "LocalMind AI — reconstructed Electron source with Agent 2.0 architecture",
+  "version": "9.3.0",
+  "description": "LocalMind AI — local Electron AI assistant with governance layer",
   "main": "main.js",
   "author": "LocalMind",
   "license": "MIT",
-  "scripts": {"start":"electron .","test":"node --test tests","build:win": "electron-builder --win nsis portable --publish never","check:sandbox":"powershell -ExecutionPolicy Bypass -File scripts/check-windows-sandbox.ps1"},
+  "scripts": {"start":"electron .","test":"node --test tests","build:win":"electron-builder --win nsis portable --publish never","check:sandbox":"powershell -ExecutionPolicy Bypass -File scripts/check-windows-sandbox.ps1"},
   "devDependencies": {"electron":"^36.0.0","electron-builder":"^26.0.0"},
   "build": {"appId":"com.localmind.ai","productName":"LocalMind AI","directories":{"output":"dist"},"files":["**/*","!dist{,/**}","!test{,/**}","!tests{,/**}","!*.zip"],"win":{"target":[{"target":"nsis","arch":["x64"]},{"target":"portable","arch":["x64"]}],"artifactName":"LocalMind-AI-${version}-${arch}.${ext}"},"nsis":{"oneClick":false,"perMachine":false,"allowToChangeInstallationDirectory":true,"createDesktopShortcut":true,"createStartMenuShortcut":true}}
 }
