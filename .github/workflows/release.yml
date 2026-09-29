@@ -26,13 +26,21 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Verify package version
+      - name: Read package version
+        id: version
         shell: pwsh
         run: |
           $pkg = Get-Content package.json | ConvertFrom-Json
-          if ($env:GITHUB_REF_TYPE -eq "tag" -and -not $env:GITHUB_REF_NAME.StartsWith("v$($pkg.version)")) {
-            Write-Error "Tag $env:GITHUB_REF_NAME does not match package version $($pkg.version)"
+          "version=$($pkg.version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Verify package version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and -not $env:GITHUB_REF_NAME.StartsWith("v$env:PACKAGE_VERSION")) {
+            Write-Error "Tag $env:GITHUB_REF_NAME does not match package version $env:PACKAGE_VERSION"
           }
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
 
       - name: Run tests
         run: npm test
