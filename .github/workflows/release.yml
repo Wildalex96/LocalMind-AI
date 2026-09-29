@@ -11,12 +11,18 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: windows-release-v9.3
+  cancel-in-progress: false
+
 jobs:
   release-windows:
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -50,11 +56,16 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+      - name: Publish v9.3.x GitHub release
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.version.outputs.version }}
+          name: LocalMind AI v${{ steps.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          make_latest: true
           files: |
             dist/*.exe
             dist/*.blockmap
