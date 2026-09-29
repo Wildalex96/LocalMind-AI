@@ -37,7 +37,7 @@ function createCivilizationRuntime(options = {}) {
         version: '9.3',
         governance: {
           policies: policies.count(),
-          auditEntries: audit.history().length,
+          audits: audit.history().length,
           councilMembers: council.members.length
         }
       };
