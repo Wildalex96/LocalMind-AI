@@ -6,78 +6,21 @@ const { DeveloperWorkspace } = require('./sandbox');
 const IGNORE = new Set(['node_modules', '.git', 'dist', 'release', '.idea', '.vscode', 'coverage']);
 const ALLOWED_COMMANDS = new Set(['npm']);
 
-function copyTree(source, target) {
-  fs.mkdirSync(target, { recursive: true });
-  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
-    if (IGNORE.has(entry.name)) continue;
-    const from = path.join(source, entry.name), to = path.join(target, entry.name);
-    if (entry.isDirectory()) copyTree(from, to); else fs.copyFileSync(from, to);
-  }
-}
-function safeJoin(root, relativePath) {
-  if (typeof relativePath !== 'string' || path.isAbsolute(relativePath) || relativePath.includes('..')) throw new Error('Unsafe patch path blocked');
-  const base = path.resolve(root), target = path.resolve(base, relativePath);
-  if (target !== base && !target.startsWith(`${base}${path.sep}`)) throw new Error('Path escape blocked');
-  return target;
-}
-function runCommand(command, args, cwd, timeoutMs = 180000) {
-  if (!ALLOWED_COMMANDS.has(command)) throw new Error(`Command blocked: ${command}`);
-  return new Promise(resolve => {
-    const executable = process.platform === 'win32' && command === 'npm' ? 'npm.cmd' : command;
-    const child = spawn(executable, args, { cwd, windowsHide: true, shell: false });
-    let stdout = '', stderr = '', finished = false;
-    const finish = result => { if (finished) return; finished = true; clearTimeout(timer); resolve(result); };
-    const timer = setTimeout(() => { try { child.kill(); } catch {} finish({ ok: false, code: null, stdout, stderr: 'Command timed out' }); }, timeoutMs);
-    child.stdout.on('data', d => { stdout += d.toString(); }); child.stderr.on('data', d => { stderr += d.toString(); });
-    child.on('error', e => finish({ ok: false, code: null, stdout, stderr: e.message }));
-    child.on('close', code => finish({ ok: code === 0, code, stdout: stdout.slice(-20000), stderr: stderr.slice(-20000) }));
-  });
-}
+function copyTree(source, target) { fs.mkdirSync(target, { recursive: true }); for (const entry of fs.readdirSync(source, { withFileTypes: true })) { if (IGNORE.has(entry.name)) continue; const from = path.join(source, entry.name), to = path.join(target, entry.name); if (entry.isDirectory()) copyTree(from, to); else fs.copyFileSync(from, to); } }
+function safeJoin(root, relativePath) { if (typeof relativePath !== 'string' || path.isAbsolute(relativePath) || relativePath.includes('..')) throw new Error('Unsafe patch path blocked'); const base = path.resolve(root), target = path.resolve(base, relativePath); if (target !== base && !target.startsWith(`${base}${path.sep}`)) throw new Error('Path escape blocked'); return target; }
+function runCommand(command, args, cwd, timeoutMs = 180000) { if (!ALLOWED_COMMANDS.has(command)) throw new Error(`Command blocked: ${command}`); return new Promise(resolve => { const executable = process.platform === 'win32' && command === 'npm' ? 'npm.cmd' : command; const child = spawn(executable, args, { cwd, windowsHide: true, shell: false }); let stdout = '', stderr = '', finished = false; const finish = result => { if (finished) return; finished = true; clearTimeout(timer); resolve(result); }; const timer = setTimeout(() => { try { child.kill(); } catch {} finish({ ok: false, code: null, stdout, stderr: 'Command timed out' }); }, timeoutMs); child.stdout.on('data', d => { stdout += d.toString(); }); child.stderr.on('data', d => { stderr += d.toString(); }); child.on('error', e => finish({ ok: false, code: null, stdout, stderr: e.message })); child.on('close', code => finish({ ok: code === 0, code, stdout: stdout.slice(-20000), stderr: stderr.slice(-20000) })); }); }
 
 class DeveloperEngine {
-  constructor({ permissionManager, workspace = new DeveloperWorkspace(), root = process.cwd(), ollamaUrl = 'http://127.0.0.1:11434', model = 'qwen3:4b' } = {}) {
-    this.permissions = permissionManager; this.workspace = workspace; this.root = path.resolve(root); this.ollamaUrl = ollamaUrl; this.model = model;
-  }
-  inspect(root = this.root) {
-    const files = []; const walk = (dir, depth = 0) => { if (depth > 5) return; for (const name of fs.readdirSync(dir)) { if (IGNORE.has(name)) continue; const full = path.join(dir, name), stat = fs.statSync(full); if (stat.isDirectory()) walk(full, depth + 1); else files.push(path.relative(root, full)); } };
-    walk(root); return { root, files: files.slice(0, 4000) };
-  }
+  constructor({ permissionManager, workspace = new DeveloperWorkspace(), root = process.cwd(), ollamaUrl = 'http://127.0.0.1:11434', model = 'qwen3:4b' } = {}) { this.permissions = permissionManager; this.workspace = workspace; this.root = path.resolve(root); this.ollamaUrl = ollamaUrl; this.model = model; }
+  inspect(root = this.root) { const files = []; const walk = (dir, depth = 0) => { if (depth > 5) return; for (const name of fs.readdirSync(dir)) { if (IGNORE.has(name)) continue; const full = path.join(dir, name), stat = fs.statSync(full); if (stat.isDirectory()) walk(full, depth + 1); else files.push(path.relative(root, full)); } }; walk(root); return { root, files: files.slice(0, 4000) }; }
   plan(task) { return { engine: 'Developer Engine 2.0', task: String(task || '').trim(), stages: ['analyze','design','implement','test','repair','quality','security','build','review'], safety: { isolatedWorkspace: true, permissionGate: true, productionChanges: false, maxRepairLoops: 3 } }; }
   request(capability, details) { if (!this.permissions) throw new Error('Permission manager unavailable'); return this.permissions.request(capability, details); }
-  createWorkspace() { const ws = this.workspace.create(); copyTree(this.root, ws.path); return ws; }
+  createWorkspace(root = this.root) { const source = path.resolve(root); if (!fs.existsSync(source) || !fs.statSync(source).isDirectory()) throw new Error(`Project directory not found: ${source}`); const ws = this.workspace.create(); copyTree(source, ws.path); return ws; }
   applyChanges(ws, changes) { if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new Error('AI patch must contain a changes object'); const applied = []; for (const [relativePath, content] of Object.entries(changes).slice(0, 30)) { const target = safeJoin(ws.path, relativePath); if (typeof content !== 'string') throw new Error(`Invalid content for ${relativePath}`); fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, content, 'utf8'); applied.push(relativePath); } return applied; }
   collectContext(ws, maxFiles = 40, maxChars = 12000) { const out = []; const walk = (dir, depth = 0) => { if (depth > 4 || out.length >= maxFiles) return; for (const name of fs.readdirSync(dir)) { if (IGNORE.has(name)) continue; const full = path.join(dir, name), stat = fs.statSync(full); if (stat.isDirectory()) walk(full, depth + 1); else if (/\.(js|cjs|mjs|ts|tsx|jsx|json|html|css|md)$/.test(name)) { try { out.push({ path: path.relative(ws.path, full), content: fs.readFileSync(full, 'utf8').slice(0, maxChars) }); } catch {} } if (out.length >= maxFiles) return; } }; walk(ws.path); return out; }
-  async askAI(instruction, context, errors = '') {
-    const response = await fetch(`${this.ollamaUrl}/api/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: this.model, stream: false, format: 'json', messages: [{ role: 'system', content: 'You are LocalMind Developer Patch Agent. Return JSON only. Produce minimal, safe, testable code changes. Never use absolute paths, .., secrets, shell commands, or install scripts. Return complete file contents for changed files.' }, { role: 'user', content: `${instruction}\n\nERRORS FROM LAST ATTEMPT:\n${errors || '(none)'}\n\nPROJECT FILES:\n${JSON.stringify(context)}` }] }) });
-    if (!response.ok) throw new Error(`Ollama patch agent HTTP ${response.status}`);
-    const data = await response.json(); let parsed; try { parsed = JSON.parse(data.message?.content || '{}'); } catch { throw new Error('AI patch agent returned invalid JSON'); }
-    if (!parsed || typeof parsed.changes !== 'object' || Array.isArray(parsed.changes)) throw new Error('AI patch agent returned no valid changes');
-    return parsed;
-  }
+  async askAI(instruction, context, errors = '') { const response = await fetch(`${this.ollamaUrl}/api/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: this.model, stream: false, format: 'json', messages: [{ role: 'system', content: 'You are LocalMind Developer Patch Agent. Return JSON only. Produce minimal, safe, testable code changes. Never use absolute paths, .., secrets, shell commands, or install scripts. Return complete file contents for changed files.' }, { role: 'user', content: `${instruction}\n\nERRORS FROM LAST ATTEMPT:\n${errors || '(none)'}\n\nPROJECT FILES:\n${JSON.stringify(context)}` }] }) }); if (!response.ok) throw new Error(`Ollama patch agent HTTP ${response.status}`); const data = await response.json(); let parsed; try { parsed = JSON.parse(data.message?.content || '{}'); } catch { throw new Error('AI patch agent returned invalid JSON'); } if (!parsed || typeof parsed.changes !== 'object' || Array.isArray(parsed.changes)) throw new Error('AI patch agent returned no valid changes'); return parsed; }
   async validate(ws, { build = false } = {}) { const results = []; results.push({ step: 'tests', ...(await runCommand('npm', ['test'], ws.path, 180000)) }); if (results[0].ok) results.push({ step: 'lint', ...(await runCommand('npm', ['run', 'lint'], ws.path, 180000)) }); if (build && results.every(r => r.ok)) results.push({ step: 'build', ...(await runCommand('npm', ['run', 'build:win'], ws.path, 600000)) }); return { ok: results.every(r => r.ok), results }; }
-  async autonomousCycle({ task, changes = null, build = false, maxRepairLoops = 3 } = {}) {
-    const writeGate = this.request('filesystemWrite', { action: 'developer:ai-patch-cycle', task });
-    if (writeGate.status !== 'allowed') return { status: 'permission_required', permission: writeGate };
-    const executionGate = this.request('codeExecution', { action: 'developer:test-repair-build', task });
-    if (executionGate.status !== 'allowed') return { status: 'permission_required', permission: executionGate };
-    const ws = this.createWorkspace();
-    try {
-      const attempts = []; let patch = changes ? { changes } : null; let lastErrors = '';
-      for (let attempt = 1; attempt <= Math.min(3, Math.max(1, maxRepairLoops)); attempt++) {
-        if (!patch) patch = await this.askAI(`Implement this task in the isolated workspace: ${task}. Make the smallest correct change.`, this.collectContext(ws), lastErrors);
-        const changedFiles = this.applyChanges(ws, patch.changes);
-        const validation = await this.validate(ws, { build: false });
-        attempts.push({ attempt, summary: patch.summary || '', changedFiles, validation });
-        if (validation.ok) {
-          if (build) { const buildResult = await runCommand('npm', ['run', 'build:win'], ws.path, 600000); attempts[attempts.length - 1].build = buildResult; if (!buildResult.ok) { lastErrors = `${buildResult.stderr}\n${buildResult.stdout}`; patch = await this.askAI('Repair the failed Windows build. Do not change unrelated files.', this.collectContext(ws), lastErrors); continue; } }
-          return { status: 'validated_in_sandbox', workspace: ws.id, attempts, requiresReview: true, changedFiles: attempts.flatMap(a => a.changedFiles) };
-        }
-        lastErrors = validation.results.filter(r => !r.ok).map(r => `${r.step}: ${r.stderr || r.stdout}`).join('\n');
-        if (attempt < 3) patch = await this.askAI('Repair the implementation using the test/lint failures below. Preserve working behavior and change only what is necessary.', this.collectContext(ws), lastErrors);
-      }
-      return { status: 'repair_limit_reached', workspace: ws.id, attempts, requiresReview: true, errors: lastErrors };
-    } finally { this.workspace.remove(ws); }
-  }
-  async run(task, { build = false } = {}) { return this.autonomousCycle({ task, build }); }
+  async autonomousCycle({ task, changes = null, build = false, maxRepairLoops = 3, root = this.root } = {}) { const writeGate = this.request('filesystemWrite', { action: 'developer:ai-patch-cycle', task, projectRoot: root }); if (writeGate.status !== 'allowed') return { status: 'permission_required', permission: writeGate }; const executionGate = this.request('codeExecution', { action: 'developer:test-repair-build', task, projectRoot: root }); if (executionGate.status !== 'allowed') return { status: 'permission_required', permission: executionGate }; const ws = this.createWorkspace(root); try { const attempts = []; let patch = changes ? { changes } : null; let lastErrors = ''; for (let attempt = 1; attempt <= Math.min(3, Math.max(1, maxRepairLoops)); attempt++) { if (!patch) patch = await this.askAI(`Implement this task in the isolated workspace: ${task}. Make the smallest correct change.`, this.collectContext(ws), lastErrors); const changedFiles = this.applyChanges(ws, patch.changes); const validation = await this.validate(ws, { build: false }); attempts.push({ attempt, summary: patch.summary || '', changedFiles, validation }); if (validation.ok) { if (build) { const buildResult = await runCommand('npm', ['run', 'build:win'], ws.path, 600000); attempts[attempts.length - 1].build = buildResult; if (!buildResult.ok) { lastErrors = `${buildResult.stderr}\n${buildResult.stdout}`; patch = await this.askAI('Repair the failed Windows build. Do not change unrelated files.', this.collectContext(ws), lastErrors); continue; } } return { status: 'validated_in_sandbox', workspace: ws.id, projectRoot: root, attempts, requiresReview: true, changedFiles: attempts.flatMap(a => a.changedFiles) }; } lastErrors = validation.results.filter(r => !r.ok).map(r => `${r.step}: ${r.stderr || r.stdout}`).join('\n'); if (attempt < 3) patch = await this.askAI('Repair the implementation using the test/lint failures below. Preserve working behavior and change only what is necessary.', this.collectContext(ws), lastErrors); } return { status: 'repair_limit_reached', workspace: ws.id, projectRoot: root, attempts, requiresReview: true, errors: lastErrors }; } finally { this.workspace.remove(ws); } }
+  async run(task, { build = false, root = this.root } = {}) { return this.autonomousCycle({ task, build, root }); }
 }
 module.exports = { DeveloperEngine };
