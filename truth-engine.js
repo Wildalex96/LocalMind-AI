@@ -4,87 +4,15 @@ function postJson(url, body, headers = {}, timeout = 30000) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     const data = JSON.stringify(body);
-    const req = https.request({
-      hostname: u.hostname,
-      port: u.port || 443,
-      path: u.pathname + u.search,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data), ...headers }
-    }, res => {
-      let text = '';
-      res.setEncoding('utf8');
-      res.on('data', c => { text += c; });
-      res.on('end', () => {
-        if (res.statusCode < 200 || res.statusCode >= 300) return reject(new Error(`HTTP ${res.statusCode}`));
-        try { resolve(JSON.parse(text)); } catch (e) { reject(e); }
-      });
+    const req = https.request({hostname:u.hostname,port:u.port||443,path:u.pathname+u.search,method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data),...headers}},res=>{
+      let text=''; res.setEncoding('utf8'); res.on('data',c=>{text+=c;}); res.on('end',()=>{if(res.statusCode<200||res.statusCode>=300)return reject(new Error(`HTTP ${res.statusCode}: ${text.slice(0,500)}`)); try{resolve(JSON.parse(text));}catch(e){reject(e);}});
     });
-    req.setTimeout(timeout, () => req.destroy(new Error('timeout')));
-    req.on('error', reject);
-    req.write(data);
-    req.end();
+    req.setTimeout(timeout,()=>req.destroy(new Error('timeout'))); req.on('error',reject); req.write(data); req.end();
   });
 }
-
-function extractJson(text) {
-  const raw = String(text || '').replace(/```json|```/g, '').trim();
-  try { return JSON.parse(raw); } catch {}
-  const start = raw.indexOf('{');
-  const end = raw.lastIndexOf('}');
-  if (start >= 0 && end > start) return JSON.parse(raw.slice(start, end + 1));
-  throw new Error('Verifier did not return JSON');
-}
-
-async function openaiVerify(question, evidence) {
-  if (!process.env.OPENAI_API_KEY) return null;
-  const r = await postJson('https://api.openai.com/v1/responses', {
-    model: process.env.OPENAI_VERIFIER_MODEL || 'gpt-5.6-luna',
-    input: [
-      { role: 'system', content: [{ type: 'input_text', text: 'You are a strict independent fact verifier. Never infer truth from popularity. Extract atomic factual claims, check each against the supplied evidence, identify contradictions, and return JSON only. A claim is VERIFIED only when the evidence directly supports it and there is no material contradiction. If evidence is insufficient, mark UNVERIFIED. If sources conflict, mark CONFLICTING.' }] },
-      { role: 'user', content: [{ type: 'input_text', text: `QUESTION:\n${question}\n\nEVIDENCE:\n${evidence}\n\nReturn exactly: {"claims":[{"claim":"...","verdict":"VERIFIED|UNVERIFIED|CONFLICTING","confidence":0,"support":["source labels"],"reason":"..."}],"overall":"VERIFIED|UNVERIFIED|CONFLICTING"}` }] }
-    ]
-  }, { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` });
-  return extractJson(r.output_text || r.output?.flatMap(x => x.content || []).map(x => x.text || '').join(''));
-}
-
-async function geminiVerify(question, evidence) {
-  if (!process.env.GEMINI_API_KEY) return null;
-  const model = process.env.GEMINI_VERIFIER_MODEL || 'gemini-3.8-flash';
-  const r = await postJson(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-    contents: [{ role: 'user', parts: [{ text: `You are a strict independent fact verifier. Do not guess. Extract atomic factual claims, compare each against the supplied evidence, detect contradictions, and return JSON only. A claim is VERIFIED only when evidence directly supports it and no material contradiction exists. Otherwise use UNVERIFIED or CONFLICTING.\n\nQUESTION:\n${question}\n\nEVIDENCE:\n${evidence}\n\nReturn exactly: {"claims":[{"claim":"...","verdict":"VERIFIED|UNVERIFIED|CONFLICTING","confidence":0,"support":["source labels"],"reason":"..."}],"overall":"VERIFIED|UNVERIFIED|CONFLICTING"}` }] }]
-  }, { 'x-goog-api-key': process.env.GEMINI_API_KEY });
-  const text = r.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
-  return extractJson(text);
-}
-
-function consensus(openai, gemini) {
-  if (!openai || !gemini) return { status: 'UNVERIFIED', reason: 'Both independent AI verifiers must be configured for strict mode.' };
-  if (openai.overall !== 'VERIFIED' || gemini.overall !== 'VERIFIED') {
-    return { status: openai.overall === 'CONFLICTING' || gemini.overall === 'CONFLICTING' ? 'CONFLICTING' : 'UNVERIFIED', reason: 'At least one independent verifier found insufficient or conflicting evidence.' };
-  }
-  const claims = [];
-  const byClaim = new Map((gemini.claims || []).map(c => [String(c.claim).toLowerCase(), c]));
-  for (const c of (openai.claims || [])) {
-    const g = byClaim.get(String(c.claim).toLowerCase());
-    if (!g) continue;
-    if (c.verdict !== 'VERIFIED' || g.verdict !== 'VERIFIED') return { status: 'UNVERIFIED', reason: 'Not all overlapping claims were independently verified.' };
-    claims.push({ claim: c.claim, confidence: Math.min(Number(c.confidence) || 0, Number(g.confidence) || 0), support: [...new Set([...(c.support || []), ...(g.support || [])])] });
-  }
-  if (!claims.length) return { status: 'UNVERIFIED', reason: 'The independent verifiers did not agree on the same factual claims.' };
-  return { status: 'VERIFIED', claims, reason: 'OpenAI and Gemini independently verified the overlapping claims against the retrieved evidence.' };
-}
-
-async function verifyEvidence(question, evidence) {
-  const [openai, gemini] = await Promise.allSettled([openaiVerify(question, evidence), geminiVerify(question, evidence)]);
-  const o = openai.status === 'fulfilled' ? openai.value : null;
-  const g = gemini.status === 'fulfilled' ? gemini.value : null;
-  const result = consensus(o, g);
-  return {
-    ...result,
-    verifiers: { openai: Boolean(o), gemini: Boolean(g) },
-    openai: o,
-    gemini: g
-  };
-}
-
-module.exports = { verifyEvidence };
+function extractJson(text){const raw=String(text||'').replace(/```json|```/g,'').trim();try{return JSON.parse(raw);}catch{}const start=raw.indexOf('{'),end=raw.lastIndexOf('}');if(start>=0&&end>start)return JSON.parse(raw.slice(start,end+1));throw new Error('Verifier did not return JSON');}
+async function openaiVerify(question,evidence){if(!process.env.OPENAI_API_KEY)return null;const model=process.env.OPENAI_VERIFIER_MODEL||'gpt-5';const r=await postJson('https://api.openai.com/v1/responses',{model,input:[{role:'system',content:[{type:'input_text',text:'You are a strict independent fact verifier. Extract atomic factual claims. A claim is VERIFIED only when supplied evidence directly supports it and no material contradiction exists. If evidence is insufficient mark UNVERIFIED; if sources conflict mark CONFLICTING. Return JSON only.'}]},{role:'user',content:[{type:'input_text',text:`QUESTION:\n${question}\n\nEVIDENCE:\n${evidence}\n\nReturn exactly: {"claims":[{"claim":"...","verdict":"VERIFIED|UNVERIFIED|CONFLICTING","confidence":0,"support":["source labels"],"reason":"..."}],"overall":"VERIFIED|UNVERIFIED|CONFLICTING"}`}]}]},{Authorization:`Bearer ${process.env.OPENAI_API_KEY}`});return extractJson(r.output_text||r.output?.flatMap(x=>x.content||[]).map(x=>x.text||'').join(''));}
+async function geminiVerify(question,evidence){if(!process.env.GEMINI_API_KEY)return null;const model=process.env.GEMINI_VERIFIER_MODEL||'gemini-3.8-flash';const r=await postJson(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,{contents:[{role:'user',parts:[{text:`You are a strict independent fact verifier. Do not guess. Extract atomic factual claims, compare each against supplied evidence, detect contradictions, and return JSON only. A claim is VERIFIED only when evidence directly supports it and no material contradiction exists. Otherwise use UNVERIFIED or CONFLICTING.\n\nQUESTION:\n${question}\n\nEVIDENCE:\n${evidence}\n\nReturn exactly: {"claims":[{"claim":"...","verdict":"VERIFIED|UNVERIFIED|CONFLICTING","confidence":0,"support":["source labels"],"reason":"..."}],"overall":"VERIFIED|UNVERIFIED|CONFLICTING"}`}]}]},{'x-goog-api-key':process.env.GEMINI_API_KEY});const text=r.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('')||'';return extractJson(text);}
+function consensus(openai,gemini){if(!openai||!gemini)return{status:'UNVERIFIED',reason:'Both independent AI verifiers must be configured for strict mode.'};if(openai.overall!=='VERIFIED'||gemini.overall!=='VERIFIED')return{status:openai.overall==='CONFLICTING'||gemini.overall==='CONFLICTING'?'CONFLICTING':'UNVERIFIED',reason:'At least one independent verifier found insufficient or conflicting evidence.'};const claims=[];const byClaim=new Map((gemini.claims||[]).map(c=>[String(c.claim).toLowerCase(),c]));for(const c of(openai.claims||[])){const g=byClaim.get(String(c.claim).toLowerCase());if(!g)continue;if(c.verdict!=='VERIFIED'||g.verdict!=='VERIFIED')return{status:'UNVERIFIED',reason:'Not all overlapping claims were independently verified.'};claims.push({claim:c.claim,confidence:Math.min(Number(c.confidence)||0,Number(g.confidence)||0),support:[...new Set([...(c.support||[]),...(g.support||[])])]});}if(!claims.length)return{status:'UNVERIFIED',reason:'The independent verifiers did not agree on the same factual claims.'};return{status:'VERIFIED',claims,reason:'OpenAI and Gemini independently verified the overlapping claims against the retrieved evidence.'};}
+async function verifyEvidence(question,evidence){const[o,g]=await Promise.allSettled([openaiVerify(question,evidence),geminiVerify(question,evidence)]);const openai=o.status==='fulfilled'?o.value:null,gemini=g.status==='fulfilled'?g.value:null;return{...consensus(openai,gemini),verifiers:{openai:Boolean(openai),gemini:Boolean(gemini)},openai,gemini};}
+module.exports={verifyEvidence};
