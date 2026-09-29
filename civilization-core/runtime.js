@@ -14,8 +14,9 @@ function createCivilizationRuntime(options = {}) {
 
   const governance = new GovernanceController({
     council,
-    policy: policies,
-    audit
+    policyEngine: policies,
+    conflictResolver: conflicts,
+    auditSystem: audit
   });
 
   return {
@@ -28,11 +29,15 @@ function createCivilizationRuntime(options = {}) {
       conflicts,
       decisions
     },
+    bootstrap() {
+      return this.getState();
+    },
     getState() {
       return {
         version: '9.3',
         governance: {
-          auditEntries: audit.history ? audit.history().length : 0,
+          policies: policies.count(),
+          auditEntries: audit.history().length,
           councilMembers: council.members.length
         }
       };
