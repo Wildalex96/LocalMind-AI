@@ -1,0 +1,52 @@
+name: v9.3.x Release
+
+on:
+  push:
+    tags:
+      - 'v9.3.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Verify package version
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json | ConvertFrom-Json
+          if (-not $env:GITHUB_REF_NAME.StartsWith("v$($pkg.version)")) {
+            Write-Error "Tag $env:GITHUB_REF_NAME does not match package version $($pkg.version)"
+          }
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build Windows installers
+        run: npm run build:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.exe
+            dist/*.blockmap
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
