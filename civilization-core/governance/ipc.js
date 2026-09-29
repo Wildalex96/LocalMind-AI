@@ -1,13 +1,13 @@
 function registerGovernanceIPC(ipcMain, civilization) {
   ipcMain.handle('governance:get-state', () => {
-    return civilization?.governance?.state?.() || {
-      enabled: true,
-      status: 'initializing'
+    return civilization?.governance?.controller?.state?.() || {
+      policies: 0,
+      audits: 0
     };
   });
 
   ipcMain.handle('governance:evaluate', (_, action) => {
-    return civilization.governance.evaluate(action);
+    return civilization.governance.controller.evaluate(action);
   });
 
   ipcMain.handle('governance:history', () => {
