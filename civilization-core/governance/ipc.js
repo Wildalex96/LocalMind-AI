@@ -1,8 +1,9 @@
 function registerGovernanceIPC(ipcMain, civilization) {
   ipcMain.handle('governance:get-state', () => {
-    return civilization?.governance?.controller?.state?.() || {
+    return civilization?.getState?.().governance || {
       policies: 0,
-      audits: 0
+      audits: 0,
+      councilMembers: 0
     };
   });
 
