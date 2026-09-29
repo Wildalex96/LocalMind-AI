@@ -1,21 +1,232 @@
-const { app, BrowserWindow, ipcMain } = require('electron'); const path=require('path'); const fs=require('fs'); const {spawn}=require('child_process'); const https=require('https'); const {searchWeb}=require('./web-search'); const cryptoEngine=require('./crypto'); const {AIProviderManager}=require('./ai/provider-manager'); const {PermissionPolicy}=require('./permissions/policy'); const {PermissionManager}=require('./permissions/manager'); const {AgentController}=require('./agent/controller'); const {DeveloperEngine}=require('./developer-engine/engine'); const {DesktopStorage}=require('./desktop-storage'); const {createCivilizationRuntime}=require('./civilization-core/runtime'); const {registerGovernanceIPC}=require('./civilization-core/governance/ipc');
-const dataDir=path.join(app.getPath('userData'),'localmind'),memoryFile=path.join(dataDir,'memory.json'),settingsFile=path.join(dataDir,'settings.json'),bootstrapFile=path.join(dataDir,'bootstrap.json'),webCacheFile=path.join(dataDir,'web-cache.json'); const DEFAULT_MODEL='qwen3:4b';
-const permissionManager=new PermissionManager(new PermissionPolicy({network:'ask',filesystemRead:'ask',filesystemWrite:'ask',codeExecution:'ask',processExecution:'deny',installSoftware:'deny',systemChanges:'deny'})); const agentController=new AgentController({permissionManager}); const developerEngine=new DeveloperEngine({permissionManager}); const civilization=createCivilizationRuntime({appVersion:'9.3'}); registerGovernanceIPC(ipcMain,civilization); civilization.bootstrap();
-const OLLAMA_URL='http://127.0.0.1:11434'; const OLLAMA_CANDIDATES=()=>[path.join(process.env.LOCALAPPDATA||'','Programs','Ollama','ollama.exe'),path.join(process.env.LOCALAPPDATA||'','Ollama','ollama.exe'),path.join(process.env.ProgramFiles||'C:\\Program Files','Ollama','ollama.exe')].filter(Boolean); let ollamaReadyPromise=null; const desktopStorage=new DesktopStorage({dataDir});
-function ensureData(){fs.mkdirSync(dataDir,{recursive:true});if(!fs.existsSync(memoryFile))fs.writeFileSync(memoryFile,JSON.stringify({memories:[]},null,2));if(!fs.existsSync(settingsFile))fs.writeFileSync(settingsFile,JSON.stringify({endpoint:OLLAMA_URL,model:DEFAULT_MODEL,provider:'free-auto',internet:true,autoLearn:true},null,2));if(!fs.existsSync(webCacheFile))fs.writeFileSync(webCacheFile,JSON.stringify({pages:[]},null,2));}
-function readJson(file,fallback){try{return JSON.parse(fs.readFileSync(file,'utf8'));}catch{return fallback;}} function writeJson(file,value){fs.writeFileSync(file,JSON.stringify(value,null,2));}
-function getSettings(){const value=readJson(settingsFile,{endpoint:OLLAMA_URL,model:DEFAULT_MODEL,provider:'free-auto',internet:true,autoLearn:true}); value.provider=['free-auto','auto','ollama','openai','gemini','claude','openrouter','groq','lmstudio'].includes(value.provider)?value.provider:'free-auto'; value.internet=value.internet!==false; value.autoLearn=value.autoLearn!==false; value.endpoint=OLLAMA_URL; value.model=String(value.model||DEFAULT_MODEL); return value;}
-function getMemory(){return readJson(memoryFile,{memories:[]});} function sleep(ms){return new Promise(r=>setTimeout(r,ms));} function run(exe,args,options={}){return new Promise((resolve,reject)=>{const child=spawn(exe,args,{windowsHide:true,...options});let stdout='',stderr='';const timer=setTimeout(()=>{try{child.kill();}catch{}reject(new Error(`${exe} timed out`));},options.timeoutMs||600000);child.stdout?.on('data',d=>stdout+=d);child.stderr?.on('data',d=>stderr+=d);child.on('error',e=>{clearTimeout(timer);reject(e);});child.on('close',code=>{clearTimeout(timer);code===0?resolve({stdout,stderr}):reject(new Error(`${exe} exited ${code}: ${stderr||stdout}`));});});}
-function findOllama(){return OLLAMA_CANDIDATES().find(p=>fs.existsSync(p))||'ollama.exe';} function ollamaInstalled(){return findOllama()!=='ollama.exe';} async function waitForOllama(timeout=45000){const t=Date.now();while(Date.now()-t<timeout){try{const r=await fetch(`${OLLAMA_URL}/api/tags`);if(r.ok)return true;}catch{}await sleep(1000);}throw new Error(`Ollama не отвечает на ${OLLAMA_URL}`);}
-async function ensureOllamaAndModel(sendStatus){ensureData();try{const exe=findOllama();if(!ollamaInstalled())throw new Error('Ollama не установлен');sendStatus?.('Запускаю Ollama…');try{const probe=await fetch(`${OLLAMA_URL}/api/tags`);if(!probe.ok)throw new Error('not ready');}catch{const p=spawn(exe,['serve'],{windowsHide:true,detached:true,stdio:'ignore'});p.unref();}await waitForOllama();sendStatus?.(`Проверяю модель ${DEFAULT_MODEL}…`);const tags=await(await fetch(`${OLLAMA_URL}/api/tags`)).json();if(!(tags.models||[]).some(m=>m.name===DEFAULT_MODEL)){sendStatus?.(`Скачиваю модель ${DEFAULT_MODEL}…`);await run(exe,['pull',DEFAULT_MODEL],{timeoutMs:1800000});}writeJson(bootstrapFile,{ready:true,model:DEFAULT_MODEL,completedAt:new Date().toISOString()});sendStatus?.('Ollama готов.');return true;}catch(e){writeJson(bootstrapFile,{ready:false,error:e.message,at:new Date().toISOString()});return false;}}
-async function ensureOllamaReady(sendStatus){if(!ollamaReadyPromise)ollamaReadyPromise=ensureOllamaAndModel(sendStatus).finally(()=>{ollamaReadyPromise=null;});if(!await ollamaReadyPromise)throw new Error(readJson(bootstrapFile,{error:'Ollama не готов.'}).error);return true;}
-const providerManager=new AIProviderManager({getSettings,ensureOllamaReady,ollamaInstalled}); function providerPayload(){const settings=getSettings();return {selected:settings.provider,providers:providerManager.config(),lastProvider:providerManager.lastProvider};} async function generateAI(messages,onStatus){return providerManager.generate(messages,{provider:getSettings().provider,onStatus});}
-function safeHandle(channel,handler){try{ipcMain.removeHandler(channel);}catch{} ipcMain.handle(channel,handler);}
-function learnFromConversation(user,assistant,source='conversation'){generateAI([{role:'system',content:'You are a memory curator. Return JSON array only.'},{role:'user',content:`Extract durable non-sensitive facts/preferences. SOURCE:${source}\n${user}\n${assistant}`}]).then(({text})=>{try{const items=JSON.parse(text.replace(/```json|```/g,'').trim());if(Array.isArray(items)){const db=getMemory();for(const item of items.slice(0,8)){const t=String(item).trim();if(t&&!db.memories.includes(t))db.memories.push(t);}writeJson(memoryFile,{memories:db.memories.slice(-5000)});}}catch{}}).catch(()=>{});}
-async function researchAndLearn(query){const s=getSettings();if(!s.internet)return null;try{return await searchWeb(query);}catch{return null;}}
-safeHandle('providers:get',()=>providerPayload()); safeHandle('providers:set',(_,provider)=>{const allowed=['free-auto','auto','ollama','openai','gemini','claude','openrouter','groq','lmstudio'];const next={...getSettings(),provider:allowed.includes(provider)?provider:'free-auto'};writeJson(settingsFile,next);return providerPayload();}); safeHandle('test:universal',async event=>{const result=await generateAI([{role:'user',content:'Reply with OK.'}],msg=>event.sender.send('bootstrap:progress',msg));return{provider:result.provider,free:result.free};}); safeHandle('chat:universal',async(event,payload)=>{const s=getSettings();let web='';if(s.internet&&payload.allowWeb!==false)web=await researchAndLearn(payload.message)||'';const memory=getMemory().memories.slice(-100).join('\n- ');const project=desktopStorage.state();const system=`You are LocalMind, a private desktop AI assistant.\nMEMORY:\n- ${memory||'(empty)'}\nPROJECT:\n${project.projectPath||'(not selected)'}\nWEB RESEARCH:\n${web||'(none)'}`;const messages=[{role:'system',content:system},...(payload.messages||payload.history||[]),{role:'user',content:payload.message}];const result=await generateAI(messages,msg=>event.sender.send('bootstrap:progress',msg));if(s.autoLearn)learnFromConversation(payload.message,result.text,web?'conversation+web':'conversation');return{text:result.text,provider:result.provider,free:result.free};});
-safeHandle('crypto:market',(_,args)=>cryptoEngine.market(args?.symbol,args?.interval,args?.limit)); safeHandle('crypto:onchain',(_,args)=>cryptoEngine.onchain(args?.symbol)); safeHandle('crypto:news',(_,args)=>cryptoEngine.news(args?.query,args?.limit)); safeHandle('crypto:backtest',(_,args)=>cryptoEngine.backtest(args?.candles||[],args?.strategy||{})); safeHandle('crypto:analyze',async(_,args)=>{const market=await cryptoEngine.market(args?.symbol||'BTCUSDT',args?.interval||'1d',args?.limit||365);const coin=await cryptoEngine.onchain(args?.coin||'bitcoin');const news=await cryptoEngine.news(args?.query||args?.coin||'bitcoin cryptocurrency',10);const ai=await generateAI([{role:'system',content:'You are a crypto research analyst. Be evidence-based and explicit about uncertainty.'},{role:'user',content:`Analyze cryptocurrency data. Distinguish raw facts from interpretation. Do not promise returns. MARKET:${JSON.stringify(market)}\nONCHAIN:${JSON.stringify(coin).slice(0,30000)}\nNEWS:${JSON.stringify(news)}`}]);return{market,onchain:coin,news,analysis:ai.text,provider:ai.provider};});
-safeHandle('agent:plan',async(_,task)=>agentController.plan(task)); safeHandle('permissions:list',()=>permissionManager.listPending()); safeHandle('permissions:decide',(_, {id,approved})=>permissionManager.decide(id,Boolean(approved))); safeHandle('agent:execute-python',async(_, {code,timeoutMs})=>agentController.executePython(code,{timeoutMs})); safeHandle('developer:inspect',()=>{const project=desktopStorage.state().projectPath;return developerEngine.inspect(project&&fs.existsSync(project)?project:undefined);}); safeHandle('developer:plan',(_,task)=>developerEngine.plan(task)); safeHandle('developer:validate',(_,options)=>developerEngine.validate(options||{})); safeHandle('developer:run',async(_, {task,build=false})=>{const project=desktopStorage.state().projectPath;return developerEngine.autonomousCycle({task,build:Boolean(build),root:project&&fs.existsSync(project)?project:undefined});}); safeHandle('developer:cycle',async(_,payload)=>{const project=desktopStorage.state().projectPath;return developerEngine.autonomousCycle({...payload,root:payload?.root||(project&&fs.existsSync(project)?project:undefined)}));
-safeHandle('project:choose',()=>desktopStorage.chooseProject()); safeHandle('project:state',()=>desktopStorage.state()); safeHandle('project:reveal',(_,target)=>desktopStorage.reveal(target)); safeHandle('storage:choose',()=>desktopStorage.chooseStorage()); safeHandle('storage:state',()=>desktopStorage.state()); safeHandle('storage:list',()=>desktopStorage.list()); safeHandle('storage:import',()=>desktopStorage.importFiles()); safeHandle('storage:saveText',(_,relativePath,content)=>desktopStorage.saveText(relativePath,content)); safeHandle('storage:open',(_,relativePath)=>desktopStorage.openItem(relativePath)); safeHandle('storage:reveal',(_,relativePath)=>desktopStorage.reveal(desktopStorage.safe(desktopStorage.readState().storagePath,relativePath)));
-safeHandle('bootstrap:status',()=>readJson(bootstrapFile,{ready:false})); safeHandle('bootstrap:start',async event=>ensureOllamaReady(msg=>event.sender.send('bootstrap:progress',msg))); safeHandle('settings:get',()=>({...getSettings(),providers:providerManager.config()})); safeHandle('settings:set',(_,value)=>{const next={...getSettings(),internet:Boolean(value.internet),autoLearn:Boolean(value.autoLearn),provider:['free-auto','auto','ollama','openai','gemini','claude','openrouter','groq','lmstudio'].includes(value.provider)?value.provider:'free-auto'};writeJson(settingsFile,next);return{...next,providers:providerManager.config()};}); safeHandle('memory:get',()=>getMemory().memories); safeHandle('memory:clear',()=>{writeJson(memoryFile,{memories:[]});return[];}); safeHandle('chat',async(event,payload)=>{const result=await generateAI([{role:'user',content:payload.message}],msg=>event.sender.send('bootstrap:progress',msg));return result.text;}); safeHandle('test',async()=>{const result=await generateAI([{role:'user',content:'Reply with OK.'}]);return result.provider;});
-function createWindow(){ensureData();const win=new BrowserWindow({width:1180,height:820,minWidth:900,minHeight:650,backgroundColor:'#101318',webPreferences:{preload:path.join(__dirname,'preload.js'),contextIsolation:true,nodeIntegration:false}});win.loadFile('index.html');win.webContents.once('did-finish-load',()=>{const p=providerManager.config();win.webContents.send('bootstrap:progress',`Free AI: ${Object.values(p).filter(x=>x.free&&x.configured).length} провайдер(ов) доступно.`);});} app.whenReady().then(()=>{createWindow();app.on('activate',()=>{if(BrowserWindow.getAllWindows().length===0)createWindow();});}); app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit();});
+const { app, BrowserWindow, ipcMain } = require('electron');
+const path = require('path');
+const fs = require('fs');
+const { spawn } = require('child_process');
+const { searchWeb } = require('./web-search');
+const cryptoEngine = require('./crypto');
+const { AIProviderManager } = require('./ai/provider-manager');
+const { PermissionPolicy } = require('./permissions/policy');
+const { PermissionManager } = require('./permissions/manager');
+const { AgentController } = require('./agent/controller');
+const { DeveloperEngine } = require('./developer-engine/engine');
+const { DesktopStorage } = require('./desktop-storage');
+const { createCivilizationRuntime } = require('./civilization-core/runtime');
+const { registerGovernanceIPC } = require('./civilization-core/governance/ipc');
+
+const dataDir = path.join(app.getPath('userData'), 'localmind');
+const memoryFile = path.join(dataDir, 'memory.json');
+const settingsFile = path.join(dataDir, 'settings.json');
+const bootstrapFile = path.join(dataDir, 'bootstrap.json');
+const webCacheFile = path.join(dataDir, 'web-cache.json');
+const DEFAULT_MODEL = 'qwen3:4b';
+
+const permissionManager = new PermissionManager(new PermissionPolicy({
+  network: 'ask', filesystemRead: 'ask', filesystemWrite: 'ask', codeExecution: 'ask',
+  processExecution: 'deny', installSoftware: 'deny', systemChanges: 'deny'
+}));
+const agentController = new AgentController({ permissionManager });
+const developerEngine = new DeveloperEngine({ permissionManager });
+const civilization = createCivilizationRuntime({ appVersion: '9.3' });
+registerGovernanceIPC(ipcMain, civilization);
+civilization.bootstrap();
+
+const OLLAMA_URL = 'http://127.0.0.1:11434';
+const OLLAMA_CANDIDATES = () => [
+  path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Ollama', 'ollama.exe'),
+  path.join(process.env.LOCALAPPDATA || '', 'Ollama', 'ollama.exe'),
+  path.join(process.env.ProgramFiles || 'C:\\Program Files', 'Ollama', 'ollama.exe')
+].filter(Boolean);
+let ollamaReadyPromise = null;
+const desktopStorage = new DesktopStorage({ dataDir });
+
+function ensureData() {
+  fs.mkdirSync(dataDir, { recursive: true });
+  if (!fs.existsSync(memoryFile)) fs.writeFileSync(memoryFile, JSON.stringify({ memories: [] }, null, 2));
+  if (!fs.existsSync(settingsFile)) fs.writeFileSync(settingsFile, JSON.stringify({ endpoint: OLLAMA_URL, model: DEFAULT_MODEL, provider: 'free-auto', internet: true, autoLearn: true }, null, 2));
+  if (!fs.existsSync(webCacheFile)) fs.writeFileSync(webCacheFile, JSON.stringify({ pages: [] }, null, 2));
+}
+function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } }
+function writeJson(file, value) { fs.writeFileSync(file, JSON.stringify(value, null, 2)); }
+function getSettings() {
+  const value = readJson(settingsFile, { endpoint: OLLAMA_URL, model: DEFAULT_MODEL, provider: 'free-auto', internet: true, autoLearn: true });
+  const allowed = ['free-auto', 'auto', 'ollama', 'openai', 'gemini', 'claude', 'openrouter', 'groq', 'lmstudio'];
+  value.provider = allowed.includes(value.provider) ? value.provider : 'free-auto';
+  value.internet = value.internet !== false;
+  value.autoLearn = value.autoLearn !== false;
+  value.endpoint = OLLAMA_URL;
+  value.model = String(value.model || DEFAULT_MODEL);
+  return value;
+}
+function getMemory() { return readJson(memoryFile, { memories: [] }); }
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+function run(exe, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(exe, args, { windowsHide: true, ...options });
+    let stdout = '', stderr = '';
+    const timer = setTimeout(() => { try { child.kill(); } catch {} reject(new Error(`${exe} timed out`)); }, options.timeoutMs || 600000);
+    child.stdout?.on('data', d => stdout += d);
+    child.stderr?.on('data', d => stderr += d);
+    child.on('error', e => { clearTimeout(timer); reject(e); });
+    child.on('close', code => { clearTimeout(timer); code === 0 ? resolve({ stdout, stderr }) : reject(new Error(`${exe} exited ${code}: ${stderr || stdout}`)); });
+  });
+}
+function findOllama() { return OLLAMA_CANDIDATES().find(p => fs.existsSync(p)) || 'ollama.exe'; }
+function ollamaInstalled() { return findOllama() !== 'ollama.exe'; }
+async function waitForOllama(timeout = 45000) {
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    try { const response = await fetch(`${OLLAMA_URL}/api/tags`); if (response.ok) return true; } catch {}
+    await sleep(1000);
+  }
+  throw new Error(`Ollama не отвечает на ${OLLAMA_URL}`);
+}
+async function ensureOllamaAndModel(sendStatus) {
+  ensureData();
+  try {
+    const exe = findOllama();
+    if (!ollamaInstalled()) throw new Error('Ollama не установлен');
+    sendStatus?.('Запускаю Ollama…');
+    try { const probe = await fetch(`${OLLAMA_URL}/api/tags`); if (!probe.ok) throw new Error('not ready'); }
+    catch { const process = spawn(exe, ['serve'], { windowsHide: true, detached: true, stdio: 'ignore' }); process.unref(); }
+    await waitForOllama();
+    sendStatus?.(`Проверяю модель ${DEFAULT_MODEL}…`);
+    const tags = await (await fetch(`${OLLAMA_URL}/api/tags`)).json();
+    if (!(tags.models || []).some(model => model.name === DEFAULT_MODEL)) {
+      sendStatus?.(`Скачиваю модель ${DEFAULT_MODEL}…`);
+      await run(exe, ['pull', DEFAULT_MODEL], { timeoutMs: 1800000 });
+    }
+    writeJson(bootstrapFile, { ready: true, model: DEFAULT_MODEL, completedAt: new Date().toISOString() });
+    sendStatus?.('Ollama готов.');
+    return true;
+  } catch (error) {
+    writeJson(bootstrapFile, { ready: false, error: error.message, at: new Date().toISOString() });
+    return false;
+  }
+}
+async function ensureOllamaReady(sendStatus) {
+  if (!ollamaReadyPromise) ollamaReadyPromise = ensureOllamaAndModel(sendStatus).finally(() => { ollamaReadyPromise = null; });
+  if (!await ollamaReadyPromise) throw new Error(readJson(bootstrapFile, { error: 'Ollama не готов.' }).error);
+  return true;
+}
+
+const providerManager = new AIProviderManager({ getSettings, ensureOllamaReady, ollamaInstalled });
+function providerPayload() {
+  const settings = getSettings();
+  return { selected: settings.provider, providers: providerManager.config(), lastProvider: providerManager.lastProvider };
+}
+async function generateAI(messages, onStatus) { return providerManager.generate(messages, { provider: getSettings().provider, onStatus }); }
+function safeHandle(channel, handler) { try { ipcMain.removeHandler(channel); } catch {} ipcMain.handle(channel, handler); }
+
+function learnFromConversation(user, assistant, source = 'conversation') {
+  generateAI([
+    { role: 'system', content: 'You are a memory curator. Return JSON array only.' },
+    { role: 'user', content: `Extract durable non-sensitive facts/preferences. SOURCE:${source}\n${user}\n${assistant}` }
+  ]).then(({ text }) => {
+    try {
+      const items = JSON.parse(text.replace(/```json|```/g, '').trim());
+      if (Array.isArray(items)) {
+        const db = getMemory();
+        for (const item of items.slice(0, 8)) {
+          const value = String(item).trim();
+          if (value && !db.memories.includes(value)) db.memories.push(value);
+        }
+        writeJson(memoryFile, { memories: db.memories.slice(-5000) });
+      }
+    } catch {}
+  }).catch(() => {});
+}
+async function researchAndLearn(query) { const settings = getSettings(); if (!settings.internet) return null; try { return await searchWeb(query); } catch { return null; } }
+
+safeHandle('providers:get', () => providerPayload());
+safeHandle('providers:set', (_, provider) => {
+  const allowed = ['free-auto', 'auto', 'ollama', 'openai', 'gemini', 'claude', 'openrouter', 'groq', 'lmstudio'];
+  writeJson(settingsFile, { ...getSettings(), provider: allowed.includes(provider) ? provider : 'free-auto' });
+  return providerPayload();
+});
+safeHandle('test:universal', async event => {
+  const result = await generateAI([{ role: 'user', content: 'Reply with OK.' }], message => event.sender.send('bootstrap:progress', message));
+  return { provider: result.provider, free: result.free };
+});
+safeHandle('chat:universal', async (event, payload) => {
+  const settings = getSettings();
+  let web = '';
+  if (settings.internet && payload.allowWeb !== false) web = await researchAndLearn(payload.message) || '';
+  const memory = getMemory().memories.slice(-100).join('\n- ');
+  const project = desktopStorage.state();
+  const system = `You are LocalMind, a private desktop AI assistant.\nMEMORY:\n- ${memory || '(empty)'}\nPROJECT:\n${project.projectPath || '(not selected)'}\nWEB RESEARCH:\n${web || '(none)'}`;
+  const messages = [{ role: 'system', content: system }, ...(payload.messages || payload.history || []), { role: 'user', content: payload.message }];
+  const result = await generateAI(messages, message => event.sender.send('bootstrap:progress', message));
+  if (settings.autoLearn) learnFromConversation(payload.message, result.text, web ? 'conversation+web' : 'conversation');
+  return { text: result.text, provider: result.provider, free: result.free };
+});
+
+safeHandle('crypto:market', (_, args) => cryptoEngine.market(args?.symbol, args?.interval, args?.limit));
+safeHandle('crypto:onchain', (_, args) => cryptoEngine.onchain(args?.symbol));
+safeHandle('crypto:news', (_, args) => cryptoEngine.news(args?.query, args?.limit));
+safeHandle('crypto:backtest', (_, args) => cryptoEngine.backtest(args?.candles || [], args?.strategy || {}));
+safeHandle('crypto:analyze', async (_, args) => {
+  const market = await cryptoEngine.market(args?.symbol || 'BTCUSDT', args?.interval || '1d', args?.limit || 365);
+  const coin = await cryptoEngine.onchain(args?.coin || 'bitcoin');
+  const news = await cryptoEngine.news(args?.query || args?.coin || 'bitcoin cryptocurrency', 10);
+  const ai = await generateAI([
+    { role: 'system', content: 'You are a crypto research analyst. Be evidence-based and explicit about uncertainty.' },
+    { role: 'user', content: `Analyze cryptocurrency data. Distinguish raw facts from interpretation. Do not promise returns. MARKET:${JSON.stringify(market)}\nONCHAIN:${JSON.stringify(coin).slice(0, 30000)}\nNEWS:${JSON.stringify(news)}` }
+  ]);
+  return { market, onchain: coin, news, analysis: ai.text, provider: ai.provider };
+});
+
+safeHandle('agent:plan', async (_, task) => agentController.plan(task));
+safeHandle('permissions:list', () => permissionManager.listPending());
+safeHandle('permissions:decide', (_, { id, approved }) => permissionManager.decide(id, Boolean(approved)));
+safeHandle('agent:execute-python', async (_, { code, timeoutMs }) => agentController.executePython(code, { timeoutMs }));
+safeHandle('developer:inspect', () => { const project = desktopStorage.state().projectPath; return developerEngine.inspect(project && fs.existsSync(project) ? project : undefined); });
+safeHandle('developer:plan', (_, task) => developerEngine.plan(task));
+safeHandle('developer:validate', (_, options) => developerEngine.validate(options || {}));
+safeHandle('developer:run', async (_, { task, build = false }) => {
+  const project = desktopStorage.state().projectPath;
+  return developerEngine.autonomousCycle({ task, build: Boolean(build), root: project && fs.existsSync(project) ? project : undefined });
+});
+safeHandle('developer:cycle', async (_, payload = {}) => {
+  const state = desktopStorage.state();
+  const selectedRoot = state.projectPath && fs.existsSync(state.projectPath) ? state.projectPath : undefined;
+  const root = payload.root || selectedRoot;
+  return developerEngine.autonomousCycle({ ...payload, root });
+});
+
+safeHandle('project:choose', () => desktopStorage.chooseProject());
+safeHandle('project:state', () => desktopStorage.state());
+safeHandle('project:reveal', (_, target) => desktopStorage.reveal(target));
+safeHandle('storage:choose', () => desktopStorage.chooseStorage());
+safeHandle('storage:state', () => desktopStorage.state());
+safeHandle('storage:list', () => desktopStorage.list());
+safeHandle('storage:import', () => desktopStorage.importFiles());
+safeHandle('storage:saveText', (_, relativePath, content) => desktopStorage.saveText(relativePath, content));
+safeHandle('storage:open', (_, relativePath) => desktopStorage.openItem(relativePath));
+safeHandle('storage:reveal', (_, relativePath) => desktopStorage.reveal(desktopStorage.safe(desktopStorage.readState().storagePath, relativePath)));
+
+safeHandle('bootstrap:status', () => readJson(bootstrapFile, { ready: false }));
+safeHandle('bootstrap:start', async event => ensureOllamaReady(message => event.sender.send('bootstrap:progress', message)));
+safeHandle('settings:get', () => ({ ...getSettings(), providers: providerManager.config() }));
+safeHandle('settings:set', (_, value) => {
+  const allowed = ['free-auto', 'auto', 'ollama', 'openai', 'gemini', 'claude', 'openrouter', 'groq', 'lmstudio'];
+  const next = { ...getSettings(), internet: Boolean(value.internet), autoLearn: Boolean(value.autoLearn), provider: allowed.includes(value.provider) ? value.provider : 'free-auto' };
+  writeJson(settingsFile, next);
+  return { ...next, providers: providerManager.config() };
+});
+safeHandle('memory:get', () => getMemory().memories);
+safeHandle('memory:clear', () => { writeJson(memoryFile, { memories: [] }); return []; });
+safeHandle('chat', async (event, payload) => { const result = await generateAI([{ role: 'user', content: payload.message }], message => event.sender.send('bootstrap:progress', message)); return result.text; });
+safeHandle('test', async () => { const result = await generateAI([{ role: 'user', content: 'Reply with OK.' }]); return result.provider; });
+
+function createWindow() {
+  ensureData();
+  const win = new BrowserWindow({ width: 1180, height: 820, minWidth: 900, minHeight: 650, backgroundColor: '#101318', webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false } });
+  win.loadFile('index.html');
+  win.webContents.once('did-finish-load', () => {
+    const providers = providerManager.config();
+    const count = Object.values(providers).filter(item => item.free && item.configured).length;
+    win.webContents.send('bootstrap:progress', `Free AI: ${count} провайдер(ов) доступно.`);
+  });
+}
+app.whenReady().then(() => { createWindow(); app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); }); });
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
